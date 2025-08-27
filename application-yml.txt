@@ -1,0 +1,46 @@
+## application.yml
+name: ebm-sms-cloud-integration
+lifecycle:
+timeout-per-shutdown-phase: 30s
+
+
+management:
+endpoints:
+web:
+exposure:
+include: health,info,metrics
+endpoint:
+health:
+probes:
+enabled: true
+
+
+aws:
+region: ${AWS_REGION:ap-south-1}
+
+
+queues:
+submissionNotifications:
+url: ${SUBMISSION_NOTIF_QUEUE_URL:}
+deliveryNotifications:
+url: ${DELIVERY_NOTIF_QUEUE_URL:}
+civUpdate:
+url: ${CIV_UPDATE_QUEUE_URL:}
+memoCreate:
+url: ${MEMO_CREATE_QUEUE_URL:}
+waitTimeSeconds: ${SQS_WAIT_TIME_SECONDS:20}
+visibilityTimeoutSeconds: ${SQS_VIS_TIMEOUT_SECONDS:60}
+maxMessages: ${SQS_MAX_MESSAGES:10}
+
+
+s3:
+bucket: ${DELIVERY_S3_BUCKET:}
+prefix: ${DELIVERY_S3_PREFIX:delivery/}
+batch:
+enabled: ${DELIVERY_S3_BATCH_ENABLED:false}
+maxItems: ${DELIVERY_S3_BATCH_MAX_ITEMS:500}
+maxSeconds: ${DELIVERY_S3_BATCH_MAX_SECONDS:30}
+```
+
+
+---
