@@ -1,0 +1,122 @@
+---
+
+## service/SqsPollerService.java
+
+```java
+package com.ebm.smscloud.service;
+
+import com.ebm.smscloud.util.JsonUtils;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.stereotype.Component;
+import software.amazon.awssdk.services.sqs.SqsClient;
+import software.amazon.awssdk.services.sqs.model.*;
+
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Optional;
+
+@Slf4j
+@Component
+@RequiredArgsConstructor
+public class SqsPollerService {
+
+    private final SqsClient sqs;
+    private final PublisherService publisher;
+    private final S3WriterService s3Writer;
+    private final ObjectMapper om = new ObjectMapper();
+
+    @Value("${queues.submissionNotifications.url}")
+    private String submissionQueueUrl;
+
+    @Value("${queues.deliveryNotifications.url}")
+    private String deliveryQueueUrl;
+
+    @Value("${queues.waitTimeSeconds:20}")
+    private int waitTimeSeconds;
+
+    @Value("${queues.visibilityTimeoutSeconds:60}")
+    private int visibilityTimeoutSeconds;
+
+    @Value("${queues.maxMessages:10}")
+    private int maxMessages;
+
+    private ReceiveMessageRequest baseReceive(String queueUrl) {
+        return ReceiveMessageRequest.builder()
+                .queueUrl(queueUrl)
+                .maxNumberOfMessages(maxMessages)
+                .waitTimeSeconds(waitTimeSeconds)
+                .visibilityTimeout(visibilityTimeoutSeconds)
+                .messageAttributeNames("All")
+                .build();
+    }
+
+    private void deleteBatch(String queueUrl, List<Message> messages) {
+        if (messages.isEmpty()) return;
+        List<DeleteMessageBatchRequestEntry> entries = new ArrayList<>();
+        for (Message m : messages) {
+            entries.add(DeleteMessageBatchRequestEntry.builder()
+                    .id(m.messageId())
+                    .receiptHandle(m.receiptHandle())
+                    .build());
+        }
+        sqs.deleteMessageBatch(DeleteMessageBatchRequest.builder()
+                .queueUrl(queueUrl)
+                .entries(entries)
+                .build());
+    }
+
+    /** Polls submission notifications and fans-out to CIV & Memo queues. */
+    @Scheduled(fixedDelayString = "PT1S")
+    public void pollSubmissionNotifications() {
+        if (submissionQueueUrl == null || submissionQueueUrl.isBlank()) return;
+        List<Message> toDelete = new ArrayList<>();
+        ReceiveMessageResponse resp = sqs.receiveMessage(baseReceive(submissionQueueUrl));
+        for (Message m : resp.messages()) {
+            try {
+                JsonNode json = om.readTree(m.body());
+                Optional<String> corr = JsonUtils.extractCorrelationKey(json,
+                        "correlationId", "messageId", "msisdn", "txnId");
+                String group = corr.orElse("default");
+                String dedupe = m.messageId();
+
+                // Forward the original JSON to both downstream queues
+                publisher.publishCivUpdate(json, group, dedupe);
+                publisher.publishMemoCreate(json, group, dedupe);
+
+                toDelete.add(m);
+                log.info("Submission notif processed, forwarded to CIV & MEMO. msgId={} group={} at {}",
+                        m.messageId(), group, Instant.now());
+            } catch (Exception e) {
+                log.error("Failed processing submission notification msgId={}: {}", m.messageId(), e.toString(), e);
+                // don't delete -> will retry / go to DLQ per redrive policy
+            }
+        }
+        deleteBatch(submissionQueueUrl, toDelete);
+    }
+
+    /** Polls delivery notifications and writes to S3. */
+    @Scheduled(fixedDelayString = "PT1S")
+    public void pollDeliveryNotifications() {
+        if (deliveryQueueUrl == null || deliveryQueueUrl.isBlank()) return;
+        List<Message> toDelete = new ArrayList<>();
+        ReceiveMessageResponse resp = sqs.receiveMessage(baseReceive(deliveryQueueUrl));
+        for (Message m : resp.messages()) {
+            try {
+                JsonNode json = om.readTree(m.body());
+                s3Writer.persist(json);
+                toDelete.add(m);
+                log.info("Delivery notif persisted to S3. msgId={} at {}", m.messageId(), Instant.now());
+            } catch (Exception e) {
+                log.error("Failed processing delivery notification msgId={}: {}", m.messageId(), e.toString(), e);
+            }
+        }
+        deleteBatch(deliveryQueueUrl, toDelete);
+    }
+}
+```

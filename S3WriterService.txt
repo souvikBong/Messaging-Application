@@ -1,0 +1,98 @@
+
+
+## service/S3WriterService.java
+
+```java
+package com.ebm.smscloud.service;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Service;
+import software.amazon.awssdk.core.sync.RequestBody;
+import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.PutObjectRequest;
+
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentLinkedQueue;
+
+@Slf4j
+@Service
+@RequiredArgsConstructor
+public class S3WriterService {
+
+    private final S3Client s3;
+    private final ObjectMapper om = new ObjectMapper();
+
+    @Value("${s3.bucket}")
+    private String bucket;
+
+    @Value("${s3.prefix}")
+    private String prefix;
+
+    @Value("${s3.batch.enabled:false}")
+    private boolean batchEnabled;
+
+    @Value("${s3.batch.maxItems:500}")
+    private int batchMaxItems;
+
+    @Value("${s3.batch.maxSeconds:30}")
+    private int batchMaxSeconds;
+
+    private final ConcurrentLinkedQueue<String> buffer = new ConcurrentLinkedQueue<>();
+    private volatile long lastFlushEpoch = System.currentTimeMillis();
+
+    private static final DateTimeFormatter DATE_PATH = DateTimeFormatter.ofPattern("yyyy/MM/dd/HH").withZone(ZoneOffset.UTC);
+
+    public void writeSingle(JsonNode json) {
+        String tsPath = DATE_PATH.format(Instant.now());
+        String key = (prefix == null ? "" : prefix) + tsPath + "/" + UUID.randomUUID() + ".json";
+        try {
+            byte[] bytes = om.writeValueAsBytes(json);
+            s3.putObject(PutObjectRequest.builder().bucket(bucket).key(key).build(), RequestBody.fromBytes(bytes));
+            log.info("Uploaded delivery notification to s3://{}/{} ({} bytes)", bucket, key, bytes.length);
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to upload to S3", e);
+        }
+    }
+
+    public synchronized void writeBatch(JsonNode json) {
+        buffer.add(json.toString());
+        long now = System.currentTimeMillis();
+        if (buffer.size() >= batchMaxItems || (now - lastFlushEpoch) / 1000 >= batchMaxSeconds) {
+            flush();
+        }
+    }
+
+    public synchronized void flush() {
+        if (buffer.isEmpty()) return;
+        List<String> items = new ArrayList<>();
+        while (!buffer.isEmpty()) items.add(buffer.poll());
+        String content = String.join("\n", items); // NDJSON
+        String tsPath = DATE_PATH.format(Instant.now());
+        String key = (prefix == null ? "" : prefix) + tsPath + "/batch-" + UUID.randomUUID() + ".ndjson";
+        try {
+            s3.putObject(PutObjectRequest.builder().bucket(bucket).key(key).build(), RequestBody.fromString(content));
+            lastFlushEpoch = System.currentTimeMillis();
+            log.info("Uploaded batch ({} items) to s3://{}/{}", items.size(), bucket, key);
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to upload batch to S3", e);
+        }
+    }
+
+    public void persist(JsonNode json) {
+        if (batchEnabled) writeBatch(json); else writeSingle(json);
+    }
+}
+```
+#93 lines
+
+
+

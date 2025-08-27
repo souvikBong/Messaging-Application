@@ -1,0 +1,66 @@
+## service/PublisherService.java
+
+private final SqsClient sqs;
+private final ObjectMapper om = new ObjectMapper();
+
+
+@Value("${queues.civUpdate.url}")
+private String civUpdateQueueUrl;
+
+
+@Value("${queues.memoCreate.url}")
+private String memoCreateQueueUrl;
+
+
+private String sha256(String s) {
+try {
+MessageDigest md = MessageDigest.getInstance("SHA-256");
+byte[] hash = md.digest(s.getBytes(StandardCharsets.UTF_8));
+StringBuilder sb = new StringBuilder();
+for (byte b : hash) sb.append(String.format("%02x", b));
+return sb.toString();
+} catch (Exception e) {
+return UUID.randomUUID().toString();
+}
+}
+
+
+private void publish(String queueUrl, Object payload, String groupId, String dedupeKey, Map<String, String> attrs) {
+try {
+String body = (payload instanceof String) ? (String) payload : om.writeValueAsString(payload);
+String dedupe = dedupeKey != null ? dedupeKey : sha256(body);
+
+
+SendMessageRequest.Builder b = SendMessageRequest.builder()
+.queueUrl(queueUrl)
+.messageBody(body)
+.messageGroupId(groupId != null ? groupId : "default")
+.messageDeduplicationId(dedupe)
+.messageAttributes(attrs != null ? attrs.entrySet().stream().collect(
+java.util.stream.Collectors.toMap(
+Map.Entry::getKey,
+e -> MessageAttributeValue.builder().dataType("String").stringValue(e.getValue()).build()
+)) : null);
+
+
+sqs.sendMessage(b.build());
+log.info("Published to {} group={} dedupe={} at {}", queueUrl, groupId, dedupe, Instant.now());
+} catch (JsonProcessingException e) {
+throw new RuntimeException("Failed to serialize message", e);
+}
+}
+
+
+public void publishCivUpdate(Object jsonPayload, String groupId, String dedupeKey) {
+publish(civUpdateQueueUrl, jsonPayload, groupId, dedupeKey, Map.of("type", "CIV_UPDATE"));
+}
+
+
+public void publishMemoCreate(Object jsonPayload, String groupId, String dedupeKey) {
+publish(memoCreateQueueUrl, jsonPayload, groupId, dedupeKey, Map.of("type", "MEMO_CREATE"));
+}
+}
+```
+
+
+---
