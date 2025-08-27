@@ -1,0 +1,37 @@
+package com.example.ebm.sms.cloud.service;
+
+import com.example.ebm.sms.cloud.model.SmsRequest;
+import com.example.ebm.sms.cloud.model.SmsResponse;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Service;
+
+/**
+ * Service class that handles the business logic for sending SMS.
+ * This version is mocked for simplicity (replace with AWS SES/SNS SDK calls later).
+ */
+@Service
+@Slf4j
+public class SmsService {
+
+    /**
+     * Sends SMS using the payload from SmsRequest.
+     *
+     * @param request SmsRequest containing message details
+     * @return SmsResponse containing status of SMS delivery
+     */
+    public SmsResponse sendSms(SmsRequest request) {
+        log.info("Sending SMS to [{}] with message: {}", request.getPhoneNumber(), request.getMessage());
+
+        // TODO: Replace this mock logic with actual AWS SES/SNS/Twilio integration
+        boolean success = true; // assume SMS sent successfully
+
+        SmsResponse response = new SmsResponse();
+        response.setCorrelationId(request.getCorrelationId());
+        response.setPhoneNumber(request.getPhoneNumber());
+        response.setStatus(success ? "SUCCESS" : "FAILED");
+        response.setMessage(success ? "Message delivered successfully" : "Message delivery failed");
+
+        log.info("SMS send result: {}", response);
+        return response;
+    }
+}
